@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Drill Board — Viewer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#f0ece4;color:#1c1917;font-family:'Trebuchet MS','Segoe UI',sans-serif;height:100vh;overflow:hidden}
+::-webkit-scrollbar{width:4px}::-webkit-scrollbar-thumb{background:#c5bfb6;border-radius:2px}
+button{font-family:inherit}
+button:hover:not(:disabled){filter:brightness(0.93)}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const{useState,useRef,useEffect}=React;
+const ltr=i=>String.fromCharCode(97+i);
+
+/* ═══ CONSTANTS (must match builder) ══════════════════════ */
+const SPD={slow:2250,medium:1190,fast:600};
+const LBL_SIZES={small:9,medium:11,large:14};
+const LBL_COLORS={black:'#1c1917',white:'#ffffff',blue:'#1d4ed8',red:'#b91c1c'};
+const TK={
+  O:{bg:'#1d4ed8',fg:'#fff',lbl:'O',r:15,shape:'circle'},
+  D:{bg:'#b91c1c',fg:'#fff',lbl:'D',r:15,shape:'circle'},
+  G:{bg:'#6d28d9',fg:'#fff',lbl:'G',r:15,shape:'circle'},
+  F:{bg:'#0f766e',fg:'#fff',lbl:'F',r:15,shape:'circle'},
+  C:{bg:'#4b5563',fg:'#fff',lbl:'C',r:15,shape:'circle'},
+  P:{bg:'#b45309',fg:'#fff',lbl:'P',r:15,shape:'circle'},
+  Xg:{bg:'#1c1917',fg:'#f5f5f4',lbl:'X',r:15,shape:'circle'},
+  Og:{bg:'#f5f5f4',fg:'#1c1917',lbl:'O',r:15,shape:'outlined'},
+  cone:{bg:'#ea580c',fg:'#fff',lbl:'',r:10,shape:'cone',defGhost:'faded'},
+  ball:{bg:'#FDE047',fg:'#1c1917',lbl:'',r:8,shape:'ball'},
+  lbl:{bg:'none',fg:'#1c1917',lbl:'Aa',r:0,shape:'label',defGhost:'faded'},
+};
+const AT={
+  movement:{color:'#1c1917',dash:null},
+  pass:{color:'#39FF14',dash:null},
+  look:{color:'#FFE600',dash:'8 4'},
+};
+
+/* ═══ MATH ════════════════════════════════════════════════ */
+function easeIO(t){return t<.5?2*t*t:-1+(4-2*t)*t;}
+function pathPos(path,t){
+  if(!path||!path.length)return{x:0,y:0};
+  if(t<=0)return path[0];if(t>=1)return path[path.length-1];
+  const segs=[];let total=0;
+  for(let i=1;i<path.length;i++){const d=Math.hypot(path[i].x-path[i-1].x,path[i].y-path[i-1].y);segs.push(d);total+=d;}
+  if(total===0)return path[0];
+  let tgt=t*total,acc=0;
+  for(let i=0;i<segs.length;i++){if(acc+segs[i]>=tgt){const s=(tgt-acc)/segs[i];return{x:path[i].x+(path[i+1].x-path[i].x)*s,y:path[i].y+(path[i+1].y-path[i].y)*s};}acc+=segs[i];}
+  return path[path.length-1];
+}
+
+/* ═══ ANIMATION ═══════════════════════════════════════════ */
+function useAnimation(drill,gi,si){
+  const[animPos,setAnimPos]=useState({});
+  const rafRef=useRef(null),startRef=useRef(null),specsRef=useRef({});
+  const prevGiRef=useRef(gi),prevSiRef=useRef(si);
+  useEffect(()=>{
+    const pgi=prevGiRef.current,psi=prevSiRef.current;
+    prevGiRef.current=gi;prevSiRef.current=si;
+    if(pgi===gi&&psi===si)return;
+    const cur=drill.groups[gi]?.slides[si];
+    const prev=drill.groups[pgi]?.slides[psi];
+    const specs={};
+    cur?.tokens?.forEach(tok=>{
+      const pt=prev?.tokens?.find(t=>t.id===tok.id);
+      const sx=pt?pt.x:tok.x,sy=pt?pt.y:tok.y;
+      const wps=(tok.type!=='lbl'&&pt?.waypoints)?pt.waypoints:[];
+      const fp=[{x:sx,y:sy},...wps,{x:tok.x,y:tok.y}];
+      const isLabel=tok.type==='lbl';
+      specs[tok.id]={path:fp,dur:isLabel?0:SPD[tok.speed||'medium'],end:{x:tok.x,y:tok.y},
+        skip:Math.hypot(tok.x-sx,tok.y-sy)<1&&!wps.length};
+    });
+    specsRef.current=specs;
+    const sp={};Object.entries(specs).forEach(([id,s])=>{sp[id]=s.path[0];});
+    setAnimPos(sp);
+    if(rafRef.current)cancelAnimationFrame(rafRef.current);
+    startRef.current=null;
+    const loop=ts=>{
+      if(!startRef.current)startRef.current=ts;
+      const elapsed=ts-startRef.current;
+      const np={};let still=false;
+      Object.entries(specsRef.current).forEach(([id,s])=>{
+        if(s.skip||s.dur===0){np[id]=s.end;return;}
+        const t=Math.min(elapsed/s.dur,1);if(t<1)still=true;
+        np[id]=pathPos(s.path,easeIO(t));
+      });
+      setAnimPos(np);
+      if(still)rafRef.current=requestAnimationFrame(loop);
+    };
+    rafRef.current=requestAnimationFrame(loop);
+    return()=>{if(rafRef.current)cancelAnimationFrame(rafRef.current);};
+  },[gi,si,drill]);
+  return{animPos};
+}
+
+/* ═══ FIELD ═══════════════════════════════════════════════ */
+function HalfField(){
+  const fx=20,fy=10,fw=720,fh=480,yEnd=fy+fh,yRest=fy+185,yGLE=yEnd-110;
+  const cx=fx+fw/2,bxL=fx+118,bxR=fx+fw-118,cr=50,gw=40;
+  return<>
+    <rect x={fx} y={fy} width={fw} height={fh} rx="5" fill="#2a6045"/>
+    <rect x={fx} y={fy} width={fw} height={fh} rx="5" fill="none" stroke="rgba(255,255,255,0.90)" strokeWidth="3"/>
+    <line x1={fx} y1={yRest} x2={fx+fw} y2={yRest} stroke="rgba(255,255,255,0.80)" strokeWidth="2"/>
+    <line x1={bxL} y1={yRest} x2={bxL} y2={yEnd} stroke="rgba(255,255,255,0.60)" strokeWidth="1.5"/>
+    <line x1={bxR} y1={yRest} x2={bxR} y2={yEnd} stroke="rgba(255,255,255,0.60)" strokeWidth="1.5"/>
+    <circle cx={cx} cy={yGLE} r={cr} fill="rgba(50,115,80,0.20)" stroke="rgba(255,255,255,0.85)" strokeWidth="2"/>
+    <polygon points={`${cx-gw/2},${yGLE} ${cx+gw/2},${yGLE} ${cx},${yGLE+32}`}
+      fill="rgba(255,255,255,0.92)" stroke="rgba(255,255,255,1)" strokeWidth="2.5"/>
+  </>;
+}
+function BlankField(){
+  const dots=[];for(let i=0;i<10;i++)for(let j=0;j<8;j++)dots.push([65+i*72,38+j*62]);
+  return<>
+    <rect x="20" y="10" width="720" height="480" rx="5" fill="#faf8f4"/>
+    <rect x="20" y="10" width="720" height="480" rx="5" fill="none" stroke="#d8d3cb" strokeWidth="1.5"/>
+    {dots.map(([x,y],i)=><circle key={i} cx={x} cy={y} r="2" fill="#ddd8d0"/>)}
+  </>;
+}
+function Defs(){
+  return<defs>
+    {Object.entries(AT).map(([k,v])=>(
+      <marker key={k} id={`ah-${k}`} markerWidth="7" markerHeight="7" refX="6" refY="2.5" orient="auto">
+        <path d="M0 0 L6.5 2.5 L0 5Z" fill={v.color}/>
+      </marker>
+    ))}
+  </defs>;
+}
+
+/* ═══ TOKEN ═══════════════════════════════════════════════ */
+function TokenEl({t,pos}){
+  const d=TK[t.type];if(!d)return null;
+  const{x,y}=pos||{x:t.x,y:t.y};
+  const txt=t.labelText||'Label';
+  const sz=LBL_SIZES[t.lblSize||'medium']||11;
+  const clr=LBL_COLORS[t.lblColor||'black']||'#1c1917';
+  const lblW=Math.max(txt.length*(sz*0.62)+14,40);
+  const codeNum=(t.code||'').replace(/\D/g,'');
+  const renderLbl=fg=>{
+    if(!d.lbl)return null;
+    if(!codeNum)return<text x="0" y="0" textAnchor="middle" dominantBaseline="central" fill={fg} fontSize={d.r-1} fontWeight="800" style={{userSelect:'none',pointerEvents:'none'}}>{d.lbl}</text>;
+    return<text fill={fg} fontWeight="800" style={{userSelect:'none',pointerEvents:'none'}}>
+      <tspan x="-2" y="3" textAnchor="middle" fontSize={d.r-2}>{d.lbl}</tspan>
+      <tspan x="6" y="10" textAnchor="middle" fontSize={d.r-7} fontWeight="700">{codeNum}</tspan>
+    </text>;
+  };
+  return(
+    <g style={{transform:`translate(${x}px,${y}px)`}}>
+      {d.shape==='circle'&&<><circle r={d.r} fill={d.bg} stroke="rgba(0,0,0,0.18)" strokeWidth="1.5"/>{renderLbl(d.fg)}</>}
+      {d.shape==='outlined'&&<><circle r={d.r} fill="rgba(255,255,255,0.92)" stroke="#1c1917" strokeWidth="2.5"/>{renderLbl('#1c1917')}</>}
+      {d.shape==='cone'&&<polygon points={`0,${-d.r*1.9} ${d.r*1.25},${d.r} ${-d.r*1.25},${d.r}`} fill={d.bg} stroke="rgba(0,0,0,0.18)" strokeWidth="1.5"/>}
+      {d.shape==='ball'&&<circle r={d.r} fill={d.bg} stroke="rgba(0,0,0,0.25)" strokeWidth="1.5"/>}
+      {d.shape==='label'&&<>
+        <rect x={-lblW/2} y={-sz/2-4} width={lblW} height={sz+8} fill={clr==='#ffffff'?'rgba(255,255,255,0.95)':'rgba(255,255,255,0.92)'} rx="3"
+          stroke={clr==='#ffffff'?'rgba(0,0,0,0.15)':'none'} strokeWidth="1"/>
+        <text x="0" y="1" textAnchor="middle" dominantBaseline="central" fill={clr==='#ffffff'?'#1c1917':clr}
+          fontSize={sz} fontWeight="700" style={{userSelect:'none',pointerEvents:'none'}}>{txt}</text>
+      </>}
+    </g>
+  );
+}
+
+/* ═══ ARROW ═══════════════════════════════════════════════ */
+function ArrowEl({a}){
+  const def=AT[a.type]||AT.movement;
+  const cx=a.cx!=null?a.cx:(a.x1+a.x2)/2,cy=a.cy!=null?a.cy:(a.y1+a.y2)/2;
+  const path=`M${a.x1} ${a.y1} Q${cx} ${cy} ${a.x2} ${a.y2}`;
+  return<path d={path} fill="none" stroke={def.color} strokeWidth="2" strokeDasharray={def.dash||undefined} markerEnd={`url(#ah-${a.type})`}/>;
+}
+
+/* ═══ GHOST ═══════════════════════════════════════════════ */
+function Ghost({slide}){
+  if(!slide)return null;
+  const op=gm=>gm==='faded'?0.13:0;
+  return(
+    <g style={{pointerEvents:'none'}}>
+      {slide.arrows?.map(a=>{const o=op(a.ghostMode||'hidden');if(!o)return null;
+        const def=AT[a.type]||AT.movement;const cx=a.cx!=null?a.cx:(a.x1+a.x2)/2,cy=a.cy!=null?a.cy:(a.y1+a.y2)/2;
+        return<g key={a.id} opacity={o}><path d={`M${a.x1} ${a.y1} Q${cx} ${cy} ${a.x2} ${a.y2}`} fill="none" stroke={def.color} strokeWidth="2" strokeDasharray={def.dash||undefined} markerEnd={`url(#ah-${a.type})`}/></g>;
+      })}
+      {slide.tokens?.map(t=>{const d=TK[t.type];if(!d)return null;const o=op(t.ghostMode||(d.defGhost||'hidden'));if(!o)return null;
+        const codeNum=(t.code||'').replace(/\D/g,'');
+        return(
+          <g key={t.id} style={{transform:`translate(${t.x}px,${t.y}px)`}} opacity={o}>
+            {d.shape==='circle'&&<><circle r={d.r} fill={d.bg}/>{d.lbl&&(codeNum
+              ?<text fill={d.fg} fontWeight="800"><tspan x="-2" y="3" textAnchor="middle" fontSize={d.r-2}>{d.lbl}</tspan><tspan x="6" y="10" textAnchor="middle" fontSize={d.r-7}>{codeNum}</tspan></text>
+              :<text x="0" y="0" textAnchor="middle" dominantBaseline="central" fill={d.fg} fontSize={d.r-1} fontWeight="800">{d.lbl}</text>)}</>}
+            {d.shape==='outlined'&&<><circle r={d.r} fill="rgba(255,255,255,0.9)" stroke="#1c1917" strokeWidth="2.5"/>{d.lbl&&<text x="0" y="0" textAnchor="middle" dominantBaseline="central" fill="#1c1917" fontSize={d.r-1} fontWeight="800">{d.lbl}</text>}</>}
+            {d.shape==='cone'&&<polygon points={`0,${-d.r*1.9} ${d.r*1.25},${d.r} ${-d.r*1.25},${d.r}`} fill={d.bg}/>}
+            {d.shape==='ball'&&<circle r={d.r} fill={d.bg}/>}
+            {d.shape==='label'&&(()=>{const txt=t.labelText||'Label',sz=LBL_SIZES[t.lblSize||'medium']||11,clr=LBL_COLORS[t.lblColor||'black']||'#1c1917',w=Math.max(txt.length*(sz*0.62)+14,40);
+              return<><rect x={-w/2} y={-sz/2-4} width={w} height={sz+8} fill="rgba(255,255,255,0.9)" rx="3"/><text x="0" y="1" textAnchor="middle" dominantBaseline="central" fill={clr==='#ffffff'?'#1c1917':clr} fontSize={sz} fontWeight="700">{txt}</text></>;})()}
+          </g>);
+      })}
+    </g>
+  );
+}
+
+/* ═══ TRACER ═════════════════════════════════════════════ */
+function TracerLines({prevSlide,curSlide}){
+  if(!prevSlide||!curSlide)return null;
+  return<g style={{pointerEvents:'none'}}>
+    {prevSlide.tokens?.filter(t=>t.trace&&t.type!=='lbl').map(pt=>{
+      const ct=curSlide.tokens?.find(t=>t.id===pt.id);if(!ct)return null;
+      const pts=[{x:pt.x,y:pt.y},...(pt.waypoints||[]),{x:ct.x,y:ct.y}];
+      const d=pts.map((p,i)=>`${i===0?'M':'L'}${p.x} ${p.y}`).join(' ');
+      return<path key={pt.id} d={d} fill="none" stroke="#1c1917" strokeWidth="1.8" strokeDasharray="6 4" opacity="0.30"/>;
+    })}
+  </g>;
+}
+
+/* ═══ SLIDE LINES ════════════════════════════════════════ */
+function SlideLines({lines}){if(!lines?.length)return null;
+  return<g style={{pointerEvents:'none'}}>{lines.map(ln=>{if(!ln.points||ln.points.length<2)return null;
+    return<polyline key={ln.id} points={ln.points.map(p=>`${p.x},${p.y}`).join(' ')} fill="none" stroke={ln.color||'#1c1917'} strokeWidth={ln.width||2.5} strokeLinecap="round" strokeLinejoin="round"/>;})}</g>;
+}
+
+/* ═══ CANVAS (read-only) ════════════════════════════════ */
+function Canvas({drill,gi,si,animPos}){
+  const groups=drill.groups||[];
+  const slide=groups[gi]?.slides[si]||{tokens:[],arrows:[],lines:[]};
+  const prev=(si>0)?groups[gi].slides[si-1]:(gi>0?groups[gi-1].slides[groups[gi-1].slides.length-1]:null);
+  return(
+    <svg viewBox="0 0 760 500" style={{width:'100%',height:'100%',display:'block',borderRadius:5,boxShadow:'0 2px 16px rgba(0,0,0,0.13)'}}>
+      <Defs/>
+      {drill.field==='half'?<HalfField/>:<BlankField/>}
+      <SlideLines lines={slide.lines}/>
+      <Ghost slide={prev}/>
+      <TracerLines prevSlide={prev} curSlide={slide}/>
+      {slide.arrows?.map(a=><ArrowEl key={a.id} a={a}/>)}
+      {slide.tokens?.map(t=>{const pos=animPos?animPos[t.id]:undefined;return<TokenEl key={t.id} t={t} pos={pos||{x:t.x,y:t.y}}/>;
+      })}
+    </svg>
+  );
+}
+
+/* ═══ VIEWER NOTES (auto-scroll) ═════════════════════════ */
+function ViewerNotes({groups,gi,si,setGi,setSi}){
+  const scrollRef=useRef(null),curRef=useRef(null);
+  useEffect(()=>{if(curRef.current)curRef.current.scrollIntoView({behavior:'smooth',block:'center'});},[gi,si]);
+  return(
+    <div ref={scrollRef} style={{flex:'0 0 38%',overflowY:'auto',padding:'18px 18px',background:'#fff',borderLeft:'1px solid #ddd8d0'}}>
+      {groups.map((g,gIdx)=>{const isCurGrp=gIdx===gi;
+        return<div key={gIdx} style={{marginBottom:18,opacity:isCurGrp?1:gIdx<gi?0.38:0.18,transition:'opacity 0.3s'}}>
+          <div style={{display:'flex',alignItems:'center',gap:7,marginBottom:4}}>
+            <span style={{width:20,height:20,borderRadius:3,display:'inline-flex',alignItems:'center',justifyContent:'center',fontSize:10,fontWeight:800,background:isCurGrp?'#15803d':'#e5e0d8',color:isCurGrp?'#fff':'#9ca3af',flexShrink:0}}>{gIdx+1}</span>
+            <span style={{fontSize:13,fontWeight:800,color:'#1c1917'}}>{g.title||`Slide ${gIdx+1}`}</span>
+          </div>
+          {g.slides.map((s,sIdx)=>{const isCur=isCurGrp&&sIdx===si;
+            return<div key={sIdx} ref={isCur?curRef:null} onClick={()=>{setGi(gIdx);setSi(sIdx);}}
+              style={{cursor:'pointer',marginBottom:8,paddingLeft:8,borderLeft:`2px solid ${isCur?'#15803d':isCurGrp?'#86efac':'#e5e0d8'}`}}>
+              {g.slides.length>1&&<div style={{fontSize:10,fontWeight:700,color:isCur?'#15803d':'#9ca3af',marginBottom:2}}>
+                {s.subtitle||`Branch ${ltr(sIdx)}`}
+              </div>}
+              <p style={{fontSize:13,lineHeight:1.65,color:isCur?'#374151':'#9ca3af',fontStyle:s.text?'normal':'italic'}}>{s.text||'No notes.'}</p>
+            </div>;
+          })}
+          {gIdx<groups.length-1&&<div style={{height:1,background:'#f0ece4',marginTop:10}}/>}
+        </div>;
+      })}
+    </div>
+  );
+}
+
+/* ═══ VIEWER ═════════════════════════════════════════════ */
+const BTN={padding:'5px 12px',background:'#fff',border:'1px solid #c9c3ba',color:'#1c1917',borderRadius:6,cursor:'pointer',fontSize:12};
+
+function Viewer({drill}){
+  const groups=drill.groups||[];
+  const[gi,setGi]=useState(0);const[si,setSi]=useState(0);
+  const{animPos}=useAnimation(drill,gi,si);
+  const flatNav=dir=>{
+    if(dir>0){if(si<(groups[gi]?.slides.length||1)-1)setSi(si+1);else if(gi<groups.length-1){setGi(gi+1);setSi(0);}}
+    else{if(si>0)setSi(si-1);else if(gi>0){setGi(gi-1);setSi((groups[gi-1]?.slides.length||1)-1);}}
+  };
+  useEffect(()=>{const h=e=>{
+    if(e.key==='ArrowRight'||e.key===' ')flatNav(1);
+    if(e.key==='ArrowLeft')flatNav(-1);
+  };window.addEventListener('keydown',h);return()=>window.removeEventListener('keydown',h);},[gi,si,groups]);
+  const curGroup=groups[gi],hasBranches=curGroup&&curGroup.slides.length>1;
+  const isFirst=gi===0&&si===0,isLast=gi===groups.length-1&&si===(curGroup?.slides.length||1)-1;
+  return(
+    <div style={{display:'flex',flexDirection:'column',height:'100vh',background:'#f0ece4'}}>
+      <div style={{display:'flex',alignItems:'center',gap:12,padding:'7px 14px',background:'#fff',borderBottom:'1px solid #ddd8d0',flexShrink:0}}>
+        <span style={{fontSize:10,fontWeight:700,color:'#15803d'}}>🥍</span>
+        <h1 style={{flex:1,fontSize:17,fontWeight:900,color:'#1c1917',letterSpacing:-0.5}}>{drill.name}</h1>
+        <span style={{fontSize:10,color:'#9ca3af'}}>← → to navigate</span>
+      </div>
+      <div style={{flex:1,display:'flex',overflow:'hidden',minHeight:0}}>
+        <div style={{flex:'0 0 62%',display:'flex',flexDirection:'column',padding:'12px 12px 10px',minWidth:0}}>
+          <div style={{flex:1,minHeight:0,display:'flex',alignItems:'center'}}><div style={{width:'100%'}}>
+            <Canvas drill={drill} gi={gi} si={si} animPos={animPos}/>
+          </div></div>
+          <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:5,marginTop:8,flexShrink:0}}>
+            <div style={{display:'flex',alignItems:'center',gap:6}}>
+              <button onClick={()=>flatNav(-1)} disabled={isFirst} style={{...BTN,padding:'5px 14px',fontSize:19,opacity:isFirst?0.22:1}}>‹</button>
+              {groups.map((_,i)=><button key={i} onClick={()=>{setGi(i);setSi(0);}} style={{width:30,height:30,borderRadius:5,cursor:'pointer',fontSize:12,fontWeight:i===gi?900:400,background:i===gi?'#15803d':i<gi?'#dcfce7':'#fff',border:`1.5px solid ${i===gi?'#15803d':i<gi?'#86efac':'#c9c3ba'}`,color:i===gi?'#fff':i<gi?'#15803d':'#9ca3af'}}>{i+1}</button>)}
+              <button onClick={()=>flatNav(1)} disabled={isLast} style={{...BTN,padding:'5px 14px',fontSize:19,opacity:isLast?0.22:1}}>›</button>
+            </div>
+            {hasBranches&&<div style={{display:'flex',gap:5,alignItems:'center'}}>
+              <span style={{fontSize:9,color:'#9ca3af',marginRight:2}}>Branch:</span>
+              {curGroup.slides.map((_,i)=><button key={i} onClick={()=>setSi(i)} style={{padding:'3px 10px',borderRadius:4,cursor:'pointer',fontSize:11,fontWeight:i===si?700:400,background:i===si?'#15803d':'#fff',border:`1.5px solid ${i===si?'#15803d':'#c9c3ba'}`,color:i===si?'#fff':'#9ca3af'}}>{ltr(i)}</button>)}
+            </div>}
+          </div>
+        </div>
+        <ViewerNotes groups={groups} gi={gi} si={si} setGi={setGi} setSi={setSi}/>
+      </div>
+    </div>
+  );
+}
+
+/* ═══ LOADER — fetches drill JSON from ?drill= parameter ═ */
+function App(){
+  const[drill,setDrill]=useState(null);
+  const[error,setError]=useState(null);
+  const[loading,setLoading]=useState(true);
+
+  useEffect(()=>{
+    const params=new URLSearchParams(window.location.search);
+    const slug=params.get('drill');
+    if(!slug){setError('No drill specified. Use ?drill=filename in the URL.');setLoading(false);return;}
+    // Try fetching from /drills/slug.json
+    fetch(`drills/${slug}.json`)
+      .then(r=>{if(!r.ok)throw new Error(`Drill not found: ${slug}`);return r.json();})
+      .then(d=>{
+        if(!d.groups||!d.name){throw new Error('Invalid drill data.');}
+        setDrill(d);setLoading(false);
+        document.title=`${d.name} — Drill Board`;
+      })
+      .catch(err=>{setError(err.message);setLoading(false);});
+  },[]);
+
+  if(loading)return<div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100vh',background:'#f0ece4'}}>
+    <div style={{textAlign:'center'}}>
+      <div style={{fontSize:28,marginBottom:8}}>🥍</div>
+      <div style={{fontSize:14,color:'#9ca3af'}}>Loading drill…</div>
+    </div>
+  </div>;
+
+  if(error)return<div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100vh',background:'#f0ece4'}}>
+    <div style={{textAlign:'center',maxWidth:400}}>
+      <div style={{fontSize:28,marginBottom:8}}>🥍</div>
+      <div style={{fontSize:16,fontWeight:700,color:'#1c1917',marginBottom:8}}>Drill Board</div>
+      <div style={{fontSize:13,color:'#b91c1c',background:'#fef2f2',border:'1px solid #fca5a5',borderRadius:8,padding:'12px 16px'}}>{error}</div>
+    </div>
+  </div>;
+
+  return<Viewer drill={drill}/>;
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
